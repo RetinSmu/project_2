@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NS Surgical Wait Times</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+
+<body>
+  <div class="page">
+    <header class="header">
+      <h1>NS Surgical Wait Times</h1>
+      <p class="sub">Vanilla vs Agentic RAG (CSV)</p>
+    </header>
+
+    <section class="ask-card">
+      <label class="label" for="q">Ask a question</label>
+      <div class="ask-row">
+        <input id="q" class="input" placeholder="e.g. highest Surgery_90th values" />
+        <button id="runBtn" class="btn">Run</button>
+      </div>
+
+      <div class="chips">
+        <span class="chip-label">Try:</span>
+        <button class="chip" data-q="highest Surgery_90th values">highest Surgery_90th values</button>
+        <button class="chip" data-q="Show top procedures by Surgery_Median">Show top procedures by Surgery_Median</button>
+        <button class="chip" data-q="Compare wait times by zone for Gastric Surgery">Compare wait times by zone for Gastric Surgery</button>
+        <button class="chip" data-q="Which specialties have long consult wait times?">Which specialties have long consult wait times?</button>
+      </div>
+
+      <div id="status" class="status"></div>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <div class="card-title">Vanilla RAG</div>
+        <div id="vanilla" class="answer muted">
+          Ask a question to see results.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Agentic RAG</div>
+        <div id="agentic" class="answer muted">
+          Ask a question to see results.
+        </div>
+      </div>
+    </section>
+  </div>
+
+<script>
+  const qEl = document.getElementById("q");
+  const runBtn = document.getElementById("runBtn");
+  const statusEl = document.getElementById("status");
+  const vanillaEl = document.getElementById("vanilla");
+  const agenticEl = document.getElementById("agentic");
+
+  function setStatus(msg, kind="") {
+    statusEl.textContent = msg || "";
+    statusEl.className = "status " + (kind || "");
+  }
+
+  function setLoading(isLoading) {
+    runBtn.disabled = isLoading;
+    runBtn.textContent = isLoading ? "Running..." : "Run";
+  }
+
+  async function ask(question) {
+    setStatus("");
+    vanillaEl.classList.remove("muted");
+    agenticEl.classList.remove("muted");
+    vanillaEl.innerHTML = "<p class='muted'>Loading...</p>";
+    agenticEl.innerHTML = "<p class='muted'>Loading...</p>";
+    setLoading(true);
+
+    try {
+      const res = await fetch("/ask", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({question})
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        setStatus(data.error || "Server error", "err");
+        vanillaEl.innerHTML = "";
+        agenticEl.innerHTML = "";
+        return;
+      }
+
+      // ✅ show server-produced HTML
+      vanillaEl.innerHTML = data.vanilla_html || "";
+      agenticEl.innerHTML = data.agentic_html || "";
+
+    } catch (e) {
+      setStatus("Network error", "err");
+      vanillaEl.innerHTML = "";
+      agenticEl.innerHTML = "";
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  runBtn.addEventListener("click", () => {
+    const q = (qEl.value || "").trim();
+    if (!q) {
+      setStatus("Please enter a question.", "err");
+      return;
+    }
+    ask(q);
+  });
+
+  qEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") runBtn.click();
+  });
+
+  document.querySelectorAll(".chip").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const q = btn.getAttribute("data-q");
+      qEl.value = q;
+      ask(q);
+    });
+  });
+</script>
+</body>
+</html>
