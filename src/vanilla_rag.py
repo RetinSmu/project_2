@@ -1,21 +1,25 @@
 from src.common.ns_data import load_csv, df_to_row_docs
-from src.common.retrieve import top_k_chunks
 from src.common.llm_openai import chat_answer
+from src.common.config import get_openai_key
+from src.common.lc_retrieve import build_faiss, lc_top_k_with_scores
 
 
 def vanilla_csv(question: str, csv_path: str, k_retrieve: int = 10, k_send: int = 8) -> str:
     df = load_csv(csv_path)
     docs = df_to_row_docs(df, max_rows=5000)
 
-    hits = top_k_chunks(question, docs, k=k_retrieve)
+    api_key = get_openai_key()
+    store = build_faiss(docs, api_key=api_key)
 
-    print("\n=== VANILLA RETRIEVED ROWS ===")
-    for r, (i, s, c) in enumerate(hits, 1):
-        print(f"\n[{r}] idx={i} score={s:.4f}")
-        print(c[:450] + ("..." if len(c) > 450 else ""))
+    hits = lc_top_k_with_scores(question, store, k=k_retrieve)
 
-    # token filter: only send top k_send
-    context = "\n\n".join([f"Row {i}:\n{c[:700]}" for i, _, c in hits[:k_send]])
+    print("\n=== VANILLA (LangChain) RETRIEVED ROWS ===")
+    for r, (score, text) in enumerate(hits, 1):
+        print(f"\n[{r}] score={score:.4f}")
+        print(text[:450] + ("..." if len(text) > 450 else ""))
+
+    # token filter
+    context = "\n\n".join([f"Row {r}:\n{t[:700]}" for r, (_, t) in enumerate(hits[:k_send], 1)])
 
     system = (
         "You are a helpful assistant. "
@@ -28,5 +32,5 @@ def vanilla_csv(question: str, csv_path: str, k_retrieve: int = 10, k_send: int 
 
 if __name__ == "__main__":
     csv_path = "data/Surgical_Wait_Times_20260207.csv"
-    q = "Which procedures have the longest surgery wait times (Surgery_90th)?"
+    q = "highest Surgery_90th values"
     print("\n=== VANILLA ANSWER ===\n", vanilla_csv(q, csv_path))

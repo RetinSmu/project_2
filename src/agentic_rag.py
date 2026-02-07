@@ -1,8 +1,9 @@
 from typing import List, Tuple
 
 from src.common.ns_data import load_csv, df_to_row_docs
-from src.common.retrieve import top_k_chunks
 from src.common.llm_openai import chat_answer
+from src.common.config import get_openai_key
+from src.common.lc_retrieve import build_faiss, lc_top_k_with_scores
 
 
 ALLOWED_FIELDS = [
@@ -19,34 +20,24 @@ def make_subqueries(question: str) -> List[str]:
         "- Output EXACTLY 3 lines.\n"
         "- Each line must be plain English keywords (not SQL).\n"
         "- No code blocks, no backticks, no quotes.\n"
-        "- Do not mention countries or outcomes.\n"
         "- Use field names when helpful: " + ", ".join(ALLOWED_FIELDS) + "\n"
         "- Keep each line under 10 words.\n"
-        "Examples of good subqueries:\n"
-        "Surgery_90th highest values\n"
-        "Top Surgery_90th by procedure\n"
-        "Maximum Surgery_90th rows\n"
     )
 
     out = chat_answer(system, f"User question: {question}")
-
     raw_lines = [l.strip().lstrip("-").strip() for l in out.splitlines() if l.strip()]
 
     clean: List[str] = []
     for l in raw_lines:
         low = l.lower()
-        # Remove obvious code-ish / SQL-ish content
         if "```" in low or "select" in low or "from " in low or "where " in low:
             continue
         if ";" in l or "(" in l or ")" in l:
-            # often shows SQL fragments; keep it strict
             continue
-        # Keep it short
         if len(l.split()) > 10:
             continue
         clean.append(l)
 
-    # Strong fallback: generate simple keyword variants ourselves
     if len(clean) < 3:
         fallback = [
             question,
@@ -62,14 +53,15 @@ def make_subqueries(question: str) -> List[str]:
     return clean[:3]
 
 
-def dedupe_hits(hits: List[Tuple[int, float, str]], keep: int = 12) -> List[Tuple[int, float, str]]:
+def dedupe_text_hits(hits: List[Tuple[float, str]], keep: int = 12) -> List[Tuple[float, str]]:
     seen = set()
-    out: List[Tuple[int, float, str]] = []
-    for i, s, c in sorted(hits, key=lambda x: x[1], reverse=True):
-        if i in seen:
+    out: List[Tuple[float, str]] = []
+    for score, text in sorted(hits, key=lambda x: x[0]):  # lower is better for FAISS L2
+        key = text.strip()
+        if key in seen:
             continue
-        seen.add(i)
-        out.append((i, s, c))
+        seen.add(key)
+        out.append((score, text))
         if len(out) >= keep:
             break
     return out
@@ -79,24 +71,27 @@ def agentic_csv(question: str, csv_path: str, per_sub_k: int = 6, k_send: int = 
     df = load_csv(csv_path)
     docs = df_to_row_docs(df, max_rows=5000)
 
+    api_key = get_openai_key()
+    store = build_faiss(docs, api_key=api_key)
+
     subqs = make_subqueries(question)
 
     print("\n=== AGENTIC SUBQUERIES ===")
     for s in subqs:
         print("-", s)
 
-    all_hits: List[Tuple[int, float, str]] = []
+    all_hits: List[Tuple[float, str]] = []
     for sq in subqs:
-        all_hits.extend(top_k_chunks(sq, docs, k=per_sub_k))
+        all_hits.extend(lc_top_k_with_scores(sq, store, k=per_sub_k))
 
-    best = dedupe_hits(all_hits, keep=12)
+    best = dedupe_text_hits(all_hits, keep=12)
 
-    print("\n=== AGENTIC RETRIEVED ROWS ===")
-    for r, (i, s, c) in enumerate(best, 1):
-        print(f"\n[{r}] idx={i} score={s:.4f}")
-        print(c[:450] + ("..." if len(c) > 450 else ""))
+    print("\n=== AGENTIC (LangChain) RETRIEVED ROWS ===")
+    for r, (score, text) in enumerate(best, 1):
+        print(f"\n[{r}] score={score:.4f}")
+        print(text[:450] + ("..." if len(text) > 450 else ""))
 
-    context = "\n\n".join([f"Row {i}:\n{c[:700]}" for i, _, c in best[:k_send]])
+    context = "\n\n".join([f"Row {r}:\n{t[:700]}" for r, (_, t) in enumerate(best[:k_send], 1)])
 
     system = (
         "You are a helpful assistant. "
@@ -114,5 +109,5 @@ def agentic_csv(question: str, csv_path: str, per_sub_k: int = 6, k_send: int = 
 
 if __name__ == "__main__":
     csv_path = "data/Surgical_Wait_Times_20260207.csv"
-    q = "Compare surgery wait times by zone for Gastrointestinal Tract Surgery."
+    q = "highest Surgery_90th values"
     print("\n=== AGENTIC ANSWER ===\n", agentic_csv(q, csv_path))
